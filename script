@@ -1,0 +1,505 @@
+#!/usr/bin/env python3
+
+import csv
+import itertools
+import re
+import sys
+
+import xlsxwriter
+
+# Take an export from Google Sheets and an export from Ecanvasser,
+# 1) combine them into a single spreadsheet and
+# 2) find groups of duplicate rows and merge them!
+#
+# The output is an Excel file so we can add some formatting to the data.
+
+# Normalize phone numbers and postal codes, to better find duplicate
+# rows and merge duplicate values.
+phone_number_re = re.compile(
+    r'(?<= )(?:1[^0-9]?)?\(?[0-9]{3}\)?[^0-9]?[0-9]{3}[^0-9]?[0-9]{4}(?= )')
+postal_code_re = re.compile(
+    r'(?<= )[0-9A-Z](?:[0-9O][0-9A-Z](?:[ -]?[0-9O][0-9A-Z][0-9O])?)?(?= )',
+    re.IGNORECASE)
+and_re = re.compile('(?<![0-9a-z])and(?![0-9a-z])')
+
+
+def phone_number_cb(match):
+  result = match.group(0)
+  result = re.compile(r'[^0-9]').sub('', result)[-10:]
+  result = result[:3] + '-' + result[3:6] + '-' + result[6:]
+  return result
+
+
+def postal_code_cb(match):
+  result = match.group(0)
+  result = re.compile(r'[^0-9A-Z]').sub('', result.upper())
+  for i, char in enumerate(result):
+    if char == '0O' [i % 2]:
+      result = result[:i] + 'O0' [i % 2] + result[i + 1:]
+  if len(result) == 6:
+    result = result[:3] + ' ' + result[3:]
+  return result
+
+
+# This is for when we compare values. Convert them to lowercase, replace
+# "&" with "and", strip all spaces around punctuation, etc. Basically
+# strip away insignificant differences.
+def norm(value):
+  value = value.lower()
+  value = ' ' + value + ' '
+  value = value.replace(' third ', ' 3rd ')
+  value = re.compile(r' *& *').sub(' and ', value)
+  value = re.compile(r'(?<![0-9a-z]) | (?![0-9a-z])').sub('', value)
+  return value
+
+
+# A group of duplicate rows. This is a class mostly because sets aren't
+# hashable, and at the end of the day we want the *unique* groups of
+# duplicate rows. Custom classes hash on id() (or something), which
+# works for us!
+class Dupes:
+
+  def __init__(self, row):
+    self.rows = {row}
+
+  # Merge duplicate rows into a single row. Basically combine duplicate
+  # information without throwing any information away. So if one row is
+  # blank and another isn't, use the non-blank value, and if two rows
+  # share the same value, use that value once. Do some fancy stuff with
+  # substrings and capitalization.
+  #
+  # The result is a dictionary of lists. If a list has multiple values,
+  # then we couldn't merge it -- and the caller can do with that what it
+  # likes (join them with commas, etc.).
+  #
+  # Start with the unique values for each field. Find the values that
+  # aren't substrings of any other values (e.g. "3 Comp 32" and "RR 2,
+  # SITE 3 COMP 32"). Merge capitalization as follows: For each
+  # character, if it's uppercase in any value, uppercase it in the
+  # result (e.g. "MacDonald"), *unless* it's at the start of a word, in
+  # which case if it's lowercase in any value that contains at least one
+  # uppercase letter (i.e. isn't all lowercase), then lowercase it in
+  # the result (e.g. "de Saeger"). Whew!
+  def merge(self):
+    names = set()
+    for row in self.rows:
+      names.update(row.data)
+    result = {}
+    for name in names:
+      diff = set(row.data.get(name) for row in self.rows if row.data.get(name))
+      if not diff.isdisjoint([
+          'Both',
+          'Kootenay Bay',
+          'Membership: Annual',
+          'Provincial',
+          'Requested',
+          'y a',
+      ]):
+        diff.discard('Yes')
+      values = list({
+          value.lower(): value
+          for value in diff
+          if not any(value.lower() in other_value.lower()
+                     for other_value in diff
+                     if value.lower() != other_value.lower())
+      }.values())
+      diff.difference_update(values)
+      #if diff:
+      #  from pprint import pprint
+      #  pprint((diff, values))
+      for i, value in enumerate(values):
+        value = ' ' + value
+        for other_value in diff:
+          if other_value.lower() != other_value:
+            # Split at case-insensitive occurrences of other values,
+            # merge capitalization and then put everything back
+            # together.
+            value, *parts = re.compile('(' + re.escape(other_value) + ')',
+                                       re.IGNORECASE).split(value)
+            for matching, right in zip(parts[0::2], parts[1::2]):
+              value += ''.join(
+                  min(a, b)
+                  if (value + other_value)[j - 1].isalnum() else max(a, b)
+                  for j, a, b in zip(
+                      itertools.count(
+                          len(value)), other_value, matching)) + right
+        values[i] = value[1:]
+      #if len(values) > 1:
+      #  from pprint import pprint
+      #  pprint(values)
+      result[name] = values
+    return result
+
+
+# Gather rows into groups of duplicates.
+#
+# Basically, rows are duplicates if
+# 1) the first names match and the last names, street addresses, and
+#    postal codes are mergeable (blank or substrings of each other) and
+# 3) any one of the following match: Email addresses, phone numbers,
+#    street addresses, or postal codes.
+#
+# The first set of criteria (first names and mergeable) are "required"
+# -- all are true or this isn't a duplicate. The second set (matching
+# attributes) are "sufficient" -- any one suggests a likely duplicate
+# (when combined with the "required" criteria). Each set is implemented
+# as its own method, for convenience.
+#
+# Note that because rows are compared pairwise, A, B, and C are all
+# grouped together if A and B and B and C are duplicates -- even if A
+# and C aren't duplicates! This is mildly unfortunate (A and C could
+# well -- and sometimes do -- have some attributes that aren't
+# mergeable), but the only alternative that I could come up with would
+# make the result indeterminate, depending what order the rows appear in
+# (which seems *more* unfortunate?).
+#
+# First names get special treatment. There are lots of legitimate
+# duplicates that are substrings of each other -- they're not identical
+# -- (e.g. "Kenneth" and "Kenneth Arnold", etc.), and we want to catch
+# these! But there are a whole lot of other rows belonging to couples
+# (e.g. "Oscar" and "Annette & Oscar"), and we don't want to merge
+# those, or we risk burying details about the individuals in the couple.
+# So, what we do is presume that first names that contain "and" (or "&")
+# belong to couples (it works well enough in practice). Then we say
+# first names match only if both values contain, or neither value
+# contains, "and".
+#
+# Comparing 30,000 rows pairwise is too slow (I tried!) so we index them
+# by a bunch of attributes first. Then we look up all of the matching
+# rows, in all of the indexes, and pairwise compare all of those,
+# instead. Technically, if two rows' attributes are *all* substrings of
+# each other (none are identical), then this isn't the same as pairwise
+# comparing *every* row -- but that's a pretty rare and degenerate case.
+class Row:
+
+  registry = []
+  by = {
+      'EMAIL': {},
+      'FIRST NAME': {},
+      'LAST NAME': {},
+      'HOME PHONE': {},
+      'Cell': {},
+      'Street': {},
+  }
+
+  def __init__(self, data):
+    self.data = {}
+    for name, value in data.items():
+      value = ' '.join(value.split())
+      if value:
+        if name in [
+            'HOME PHONE',
+            'Cell',
+        ]:
+          value = ' ' + value + ' '
+          #match = phone_number_re.match(value, 1)
+          #if not match or match.end() != len(value) - 1:
+          #  from pprint import pprint
+          #  pprint(value)
+          value = phone_number_re.sub(phone_number_cb, value)
+          value = value[1:-1]
+        elif name == 'Postal code':
+          value = ' ' + value + ' '
+          #match = postal_code_re.match(value, 1)
+          #if not match or match.end() != len(value) - 1:
+          #  from pprint import pprint
+          #  pprint(value)
+          value = postal_code_re.sub(postal_code_cb, value)
+          value = value[1:-1]
+        elif value.lower() == 'y':
+          value = 'Yes'
+        self.data[name] = value
+
+    self.dupes = Dupes(self)
+    Row.registry.append(self)
+
+    # This is the main de-duping code right here. We index rows by a
+    # bunch of attributes, so for each index, look up all of the already
+    # indexed rows (and by the way, index this row at the same time).
+    # Then, for each row we just looked up, compare it to the current
+    # row. Are they duplicates? If so, meld our associated groups of
+    # duplicates together. The result is a list of every single row
+    # (Rows.registry), each one pointing to the group of duplicates it
+    # belongs to (row.dupes) -- and from there we can get the unique
+    # groups of duplicate rows, which was our goal. Yay!
+    unique = set()
+    for name, index in Row.by.items():
+      value = self.data.get(name)
+      if value:
+        value = norm(value)
+        result = index.get(value)
+        if result is None:
+          index[value] = [self]
+        else:
+          unique.update(result)
+          result.append(self)
+    for other_row in unique:
+      if other_row not in self.dupes.rows and self.is_duplicate_required(
+          other_row) and self.is_duplicate_sufficient(other_row):
+        self.dupes.rows |= other_row.dupes.rows
+        for dupes_row in other_row.dupes.rows:
+          dupes_row.dupes = self.dupes
+
+  def is_duplicate_required(self, other_row):
+    value = self.data.get('FIRST NAME')
+    if not value:
+      return False
+    value = norm(value)
+    other_value = other_row.data.get('FIRST NAME')
+    if not other_value:
+      return False
+    other_value = norm(other_value)
+    if not (value in other_value or other_value in value
+           ) or bool(and_re.search(value)) != bool(and_re.search(other_value)):
+      return False
+
+    for name in [
+        'LAST NAME',
+        'Street',
+        'Postal code',
+    ]:
+      value = self.data.get(name)
+      if value:
+        value = norm(value)
+        other_value = other_row.data.get(name)
+        if other_value:
+          other_value = norm(other_value)
+          if not (value in other_value or other_value in value):
+            return False
+
+    return True
+
+  # Phone numbers and email addresses match if rows have a phone number
+  # of email address in common (rows can potentially have multiple phone
+  # numbers and multiple email addresses). Street addresses and postal
+  # codes match if they're substrings of each other.
+  def is_duplicate_sufficient(self, other_row):
+    value = self.data.get('EMAIL')
+    if value:
+      values = frozenset(norm(value).split(', '))
+      other_value = other_row.data.get('EMAIL')
+      if other_value:
+        other_values = frozenset(norm(other_value).split(', '))
+        if not values.isdisjoint(other_values):
+          return True
+
+    values = set()
+    other_values = set()
+    for name in [
+        'HOME PHONE',
+        'Cell',
+    ]:
+      value = self.data.get(name)
+      if value:
+        values.update(norm(value).split(', '))
+      other_value = other_row.data.get(name)
+      if other_value:
+        other_values.update(norm(other_value).split(', '))
+    if not values.isdisjoint(other_values):
+      return True
+
+    for name in [
+        'Street',
+        'Postal code',
+    ]:
+      value = self.data.get(name)
+      if value:
+        value = norm(value)
+        other_value = other_row.data.get(name)
+        if other_value:
+          other_value = norm(other_value)
+          if value in other_value or other_value in value:
+            return True
+
+    return False
+
+
+# Okay, welcome to the body of the script! Take two filenames, one for
+# the Google Sheets export and the other for the Ecanvasser export, and
+# parse them into rows.
+spreadsheet, ecanvasser = sys.argv[1:]
+
+with open(spreadsheet) as f:
+  reader = csv.DictReader(f)
+  reader.fieldnames = fieldnames = [
+      ' '.join(name.split()) for name in reader.fieldnames
+  ]
+  for data in reader:
+    Row(data)
+
+# This here is where we map Ecanvasser fields to our spreadsheet
+# columns. Column names that are commented out don't have corresponding
+# fields in Ecanvasser (I think?). Pretty much all of the Ecanvasser
+# fields are captured in the spreadsheet (again, I think?).
+with open(ecanvasser) as f:
+  reader = csv.DictReader(f)
+  for data in reader:
+    data = {
+        'EMAIL':
+            data['Email Address'],
+        'FIRST NAME':
+            data['First Name'],
+        'LAST NAME':
+            data['Surname'],
+        #'Email group Area':
+        'HOME PHONE':
+            data['Home Phone'],
+        'Cell':
+            data['Mobile Phone'],
+        'Volunteer Status':
+            data['2017_volunteer_status'],
+        #'Contact Notes':
+        #    data['Notes - Canvassing'],
+        'Street':
+            ' '.join(data[name]
+                     for name in ['House Unit', 'House Number', 'Street Name']
+                     if data[name]),
+        'Town':
+            data['City'],
+        'Postal code':
+            data['Zip'],
+        #'Wish to Donate':
+        'Donated Y /N':
+            data['2017_donor'],
+        #'Dontation Amount':
+        #'Thanked for Donation (email / phone / in person)':
+        # This shimmy shamma puts the combined, unique values of three
+        # Ecanvasser fields under one spreadsheet column.
+        'Support Level':
+            ', '.join(
+                sorted(
+                    frozenset(data[name]
+                              for name in [
+                                  'Party', '2017_party_support',
+                                  '2017_support_level'
+                              ] if data[name]))),
+        #'Kims List':
+        #'Kims notes':
+        #'Follow-up (Kim Only)':
+        #'Followup (For Vol.)':
+        'DO NOT CALL':
+            data['2017_do_not_call'],
+        'Member':
+            data['2017_member'],
+        'Sign outside your home':
+            data['2017_lawn_sign_request'],
+        #'Door knocking':
+        #'Calling':
+        #'Street Can.':
+        #'Sign Install':
+        #'Data Entry':
+        #'Office Support':
+        #'Social Media & Comms':
+        #'Policy Research':
+        #'Graphic Design':
+        #'Coffee with Kim':
+        #    data['Coffee With Kim'],
+        #'Events planning':
+        #'Event set up/pack up':
+        #'Food (events)':
+        #'Poster put up':
+        #'Provide Billets & Food':
+        #'Letters to the editor':
+        #'Other skills/interests':
+        #'ED Polling stations':
+        #'ED - Provide lifts ED':
+        #'GOTV calling':
+        #'Scruitineering':
+        #'Other Committments':
+        #'Fundraising':
+    }
+    Row(data)
+
+# Finally! The output.
+with xlsxwriter.Workbook('spreadsheet.xlsx') as workbook:
+  worksheet = workbook.add_worksheet()
+  worksheet.write_row(0, 0, fieldnames)
+
+  # The whole point of the exercise: Get the unique groups of duplicate
+  # rows, merge them into single rows, and add them to the output.
+  unique = frozenset(row.dupes for row in Row.registry)
+  for i, dupes in enumerate(unique):
+    #if len(dupes.rows) > 1:
+    #if len(frozenset(row.data.get('LAST NAME') for row in dupes.rows)) > 1:
+    #  from pprint import pprint
+    #  pprint([row.data for row in dupes.rows])
+    merged = dupes.merge()
+    for j, name in enumerate(fieldnames):
+      values = merged.get(name)
+      if values:
+        worksheet.write(i + 1, j, ', '.join(sorted(values)))
+
+  # The rest, from here to the end, is formatting. Make the output look
+  # roughly like the existing spreadsheet.
+  worksheet.freeze_panes(1, 0)
+  default_props = dict(font_size=12, text_wrap=True)
+  default = workbook.add_format(default_props)
+  strong = workbook.add_format(dict(default_props, bold=True))
+  worksheet.set_column(0, len(fieldnames) - 1, None, default)
+  worksheet.set_row(0, None, strong)
+  for name in [
+      'EMAIL',
+      'Street',
+  ]:
+    i = fieldnames.index(name)
+    worksheet.set_column(i, i, 24)
+  for name in [
+      'FIRST NAME',
+      'LAST NAME',
+  ]:
+    i = fieldnames.index(name)
+    worksheet.set_column(i, i, 16, strong)
+  for name in [
+      'Email group Area',
+      'Town',
+      'Postal code',
+  ]:
+    i = fieldnames.index(name)
+    worksheet.set_column(i, i, 12)
+  for name in [
+      'HOME PHONE',
+      'Cell',
+      'Volunteer Status',
+      'Wish to Donate',
+      'Donated Y /N',
+      'Dontation Amount',
+      'Thanked for Donation (email / phone / in person)',
+      'Support Level',
+      'Kims List',
+      'Kims notes',
+      'Follow-up (Kim Only)',
+      'Followup (For Vol.)',
+      'DO NOT CALL',
+      'Member',
+  ]:
+    i = fieldnames.index(name)
+    worksheet.set_column(i, i, 16)
+  for name in ['Contact Notes']:
+    i = fieldnames.index(name)
+    worksheet.set_column(i, i, 32)
+  #for name in [
+  #    'Sign outside your home',
+  #    'Door knocking',
+  #    'Calling',
+  #    'Street Can.',
+  #    'Sign Install',
+  #    'Data Entry',
+  #    'Office Support',
+  #    'Social Media & Comms',
+  #    'Policy Research',
+  #    'Graphic Design',
+  #    'Coffee with Kim',
+  #    'Events planning',
+  #    'Event set up/pack up',
+  #    'Food (events)',
+  #    'Poster put up',
+  #    'Provide Billets & Food',
+  #    'Letters to the editor',
+  #    'Other skills/interests',
+  #    'ED Polling stations',
+  #    'ED - Provide lifts ED',
+  #    'GOTV calling',
+  #    'Scruitineering',
+  #    'Other Committments',
+  #    'Fundraising',
+  #]:
