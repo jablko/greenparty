@@ -2,6 +2,7 @@
 
 import csv
 import itertools
+import operator
 import re
 import sys
 
@@ -327,6 +328,20 @@ with open(spreadsheet) as f:
   for data in reader:
     Row(data)
 
+frequencies_by_town = {}
+for row in Row.registry:
+  town = row.data.get('Town')
+  email_group_area = row.data.get('Email group Area')
+  if town and email_group_area:
+    town = norm(town)
+    frequencies = frequencies_by_town.get(town)
+    if frequencies is None:
+      frequencies_by_town[town] = frequencies = {}
+    if email_group_area in frequencies:
+      frequencies[email_group_area] += 1
+    else:
+      frequencies[email_group_area] = 1
+
 # This here is where we map Ecanvasser fields to our spreadsheet
 # columns. Column names that are commented out don't have corresponding
 # fields in Ecanvasser (I think?). Pretty much all of the Ecanvasser
@@ -428,6 +443,13 @@ with xlsxwriter.Workbook('spreadsheet.xlsx') as workbook:
       values = merged.get(name)
       if values:
         worksheet.write(i + 1, j, ', '.join(sorted(values)))
+      elif name == 'Email group Area':
+        values = merged.get('Town')
+        if values:
+          frequencies = frequencies_by_town.get(norm(', '.join(sorted(values))))
+          if frequencies is not None:
+            value, count = max(frequencies.items(), key=operator.itemgetter(1))
+            worksheet.write(i + 1, j, value)
 
   # The rest, from here to the end, is formatting. Make the output look
   # roughly like the existing spreadsheet.
