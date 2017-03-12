@@ -2,6 +2,7 @@
 
 import configparser
 import csv
+import difflib
 import itertools
 import operator
 import re
@@ -116,22 +117,22 @@ class Dupes:
       #  from pprint import pprint
       #  pprint((diff, values))
       for i, value in enumerate(values):
-        value = ' ' + value
+        after = value = ' ' + value
         for other_value in diff:
           if other_value.lower() != other_value:
             # Split at case-insensitive occurrences of other values,
             # merge capitalization and then put everything back
             # together.
-            value, *parts = re.compile('(' + re.escape(other_value) + ')',
-                                       re.IGNORECASE).split(value)
+            after, *parts = re.compile('(' + re.escape(other_value) + ')',
+                                       re.IGNORECASE).split(after)
             for matching, right in zip(parts[0::2], parts[1::2]):
-              value += ''.join(
-                  min(a, b)
-                  if (value + other_value)[j - 1].isalnum() else max(a, b)
+              after += ''.join(
+                  min(a, b) if value[j - 1].isalnum() else max(a, b)
+                  if value.lower() != value else b
                   for j, a, b in zip(
                       itertools.count(
-                          len(value)), other_value, matching)) + right
-        values[i] = value[1:]
+                          len(after)), matching, other_value)) + right
+        values[i] = after[1:]
       #if len(values) > 1:
       #  from pprint import pprint
       #  pprint(values)
@@ -356,6 +357,7 @@ for sheet in result['sheets']:
   properties = sheet['properties']
   if properties['title'] == title:
     break
+sheet_id = properties['sheetId']
 grid_properties = properties['gridProperties']
 row_count = grid_properties['rowCount']
 column_count = grid_properties['columnCount']
@@ -490,12 +492,44 @@ for dupes in unique:
         if frequencies is not None:
           value, count = max(frequencies.items(), key=operator.itemgetter(1))
     data.append(value)
+  while data and not data[-1]:
+    data.pop()
   after.append(data)
-result = service.spreadsheets().values().update(
-    spreadsheetId=spreadsheet_id,
-    range=xl_range(1, 0, max(row_count - 1, len(after)), column_count - 1),
-    valueInputOption='RAW',
-    body=dict(values=after)).execute()
+requests = []
+for tag, i1, j1, i2, j2 in reversed(
+    difflib.SequenceMatcher(None, [tuple(data) for data in before],
+                            [tuple(data) for data in after]).get_opcodes()):
+  if tag != 'equal':
+    if j2 - i2 > j1 - i1:
+      requests.append(
+          dict(insertDimension=dict(range=dict(
+              sheetId=sheet_id,
+              dimension='ROWS',
+              startIndex=j1 + 1,
+              endIndex=i1 + 1 + j2 - i2))))
+    for data1, data2 in zip(before[i1:j1], after[i2:j2]):
+      data2 += [''] * (len(data1) - len(data2))
+    requests.append(
+        dict(updateCells=dict(
+            start=dict(
+                sheetId=sheet_id, rowIndex=i1 + 1),
+            rows=[
+                dict(values=[
+                    dict(userEnteredValue=dict(stringValue=value))
+                    for value in data
+                ]) for data in after[i2:j2]
+            ],
+            fields='userEnteredValue')))
+    if j2 - i2 < j1 - i1:
+      requests.append(
+          dict(deleteDimension=dict(range=dict(
+              sheetId=sheet_id,
+              dimension='ROWS',
+              startIndex=i1 + 1 + j2 - i2,
+              endIndex=j1 + 1))))
+if requests:
+  result = service.spreadsheets().batchUpdate(
+      spreadsheetId=spreadsheet_id, body=dict(requests=requests)).execute()
 #with xlsxwriter.Workbook('spreadsheet.xlsx') as workbook:
 #  worksheet = workbook.add_worksheet()
 #  worksheet.write_row(0, 0, fieldnames)
