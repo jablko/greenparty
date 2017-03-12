@@ -12,7 +12,7 @@ import httplib2
 from oauth2client import client
 from oauth2client import tools
 from oauth2client.file import Storage
-import xlsxwriter
+#import xlsxwriter
 from xlsxwriter.utility import xl_range
 
 # Take an export from Google Sheets and an export from Ecanvasser,
@@ -343,7 +343,7 @@ storage = Storage(filename)
 credentials = storage.get()
 if credentials is None:
   filename = 'client_secret.json'
-  scope = 'https://www.googleapis.com/auth/spreadsheets.readonly'
+  scope = 'https://www.googleapis.com/auth/spreadsheets'
   flow = client.flow_from_clientsecrets(filename, scope)
   flags = tools.argparser.parse_args([])
   credentials = tools.run_flow(flow, storage, flags)
@@ -464,103 +464,115 @@ with open(ecanvasser) as f:
     }
     Row(data)
 
-# Finally! The output.
-with xlsxwriter.Workbook('spreadsheet.xlsx') as workbook:
-  worksheet = workbook.add_worksheet()
-  worksheet.write_row(0, 0, fieldnames)
-
-  # The whole point of the exercise: Get the unique groups of duplicate
-  # rows, merge them into single rows, and add them to the output.
-  unique = frozenset(row.dupes for row in Row.registry)
-  for i, dupes in enumerate(unique):
-    #if len(dupes.rows) > 1:
-    #if len(frozenset(row.data.get('LAST NAME') for row in dupes.rows)) > 1:
-    #  from pprint import pprint
-    #  pprint([row.data for row in dupes.rows])
-    merged = dupes.merge()
-    for j, name in enumerate(fieldnames):
-      values = merged.get(name)
+# Finally! The output. Get the unique groups of duplicate rows, merge
+# them into single rows, and add them to the output.
+unique = [
+    Row.registry[i].dupes
+    for i in sorted(
+        {row.dupes: -1 - i
+         for i, row in enumerate(reversed(Row.registry))}.values())
+]
+after = []
+for dupes in unique:
+  result = dupes.merge()
+  data = []
+  for name in fieldnames:
+    values = result.get(name)
+    # When updating, values with no data are skipped. To clear data, use
+    # an empty string ("").
+    value = ''
+    if values:
+      value = ', '.join(sorted(values))
+    elif name == 'Email group Area':
+      values = result.get('Town')
       if values:
-        worksheet.write(i + 1, j, ', '.join(sorted(values)))
-      elif name == 'Email group Area':
-        values = merged.get('Town')
-        if values:
-          frequencies = frequencies_by_town.get(norm(', '.join(sorted(values))))
-          if frequencies is not None:
-            value, count = max(frequencies.items(), key=operator.itemgetter(1))
-            worksheet.write(i + 1, j, value)
-
-  # The rest, from here to the end, is formatting. Make the output look
-  # roughly like the existing spreadsheet.
-  worksheet.freeze_panes(1, 0)
-  default_props = dict(font_size=12, text_wrap=True)
-  default = workbook.add_format(default_props)
-  strong = workbook.add_format(dict(default_props, bold=True))
-  worksheet.set_column(0, len(fieldnames) - 1, None, default)
-  worksheet.set_row(0, None, strong)
-  for name in [
-      'EMAIL',
-      'Street',
-  ]:
-    i = fieldnames.index(name)
-    worksheet.set_column(i, i, 24)
-  for name in [
-      'FIRST NAME',
-      'LAST NAME',
-  ]:
-    i = fieldnames.index(name)
-    worksheet.set_column(i, i, 16, strong)
-  for name in [
-      'Email group Area',
-      'Town',
-      'Postal code',
-  ]:
-    i = fieldnames.index(name)
-    worksheet.set_column(i, i, 12)
-  for name in [
-      'HOME PHONE',
-      'Cell',
-      'Volunteer Status',
-      'Wish to Donate',
-      'Donated Y /N',
-      'Dontation Amount',
-      'Thanked for Donation (email / phone / in person)',
-      'Support Level',
-      'Kims List',
-      'Kims notes',
-      'Follow-up (Kim Only)',
-      'Followup (For Vol.)',
-      'DO NOT CALL',
-      'Member',
-  ]:
-    i = fieldnames.index(name)
-    worksheet.set_column(i, i, 16)
-  for name in ['Contact Notes']:
-    i = fieldnames.index(name)
-    worksheet.set_column(i, i, 32)
-  #for name in [
-  #    'Sign outside your home',
-  #    'Door knocking',
-  #    'Calling',
-  #    'Street Can.',
-  #    'Sign Install',
-  #    'Data Entry',
-  #    'Office Support',
-  #    'Social Media & Comms',
-  #    'Policy Research',
-  #    'Graphic Design',
-  #    'Coffee with Kim',
-  #    'Events planning',
-  #    'Event set up/pack up',
-  #    'Food (events)',
-  #    'Poster put up',
-  #    'Provide Billets & Food',
-  #    'Letters to the editor',
-  #    'Other skills/interests',
-  #    'ED Polling stations',
-  #    'ED - Provide lifts ED',
-  #    'GOTV calling',
-  #    'Scruitineering',
-  #    'Other Committments',
-  #    'Fundraising',
-  #]:
+        frequencies = frequencies_by_town.get(norm(', '.join(sorted(values))))
+        if frequencies is not None:
+          value, count = max(frequencies.items(), key=operator.itemgetter(1))
+    data.append(value)
+  after.append(data)
+result = service.spreadsheets().values().update(
+    spreadsheetId=spreadsheet_id,
+    range=xl_range(1, 0, max(row_count - 1, len(after)), column_count - 1),
+    valueInputOption='RAW',
+    body=dict(values=after)).execute()
+#with xlsxwriter.Workbook('spreadsheet.xlsx') as workbook:
+#  worksheet = workbook.add_worksheet()
+#  worksheet.write_row(0, 0, fieldnames)
+#  for i, data in enumerate(after):
+#    worksheet.write_row(i + 1, 0, data)
+#
+#  # The rest, from here to the end, is formatting. Make the output look
+#  # roughly like the existing spreadsheet.
+#  worksheet.freeze_panes(1, 0)
+#  default_props = dict(font_size=12, text_wrap=True)
+#  default = workbook.add_format(default_props)
+#  strong = workbook.add_format(dict(default_props, bold=True))
+#  worksheet.set_column(0, len(fieldnames) - 1, None, default)
+#  worksheet.set_row(0, None, strong)
+#  for name in [
+#      'EMAIL',
+#      'Street',
+#  ]:
+#    i = fieldnames.index(name)
+#    worksheet.set_column(i, i, 24)
+#  for name in [
+#      'FIRST NAME',
+#      'LAST NAME',
+#  ]:
+#    i = fieldnames.index(name)
+#    worksheet.set_column(i, i, 16, strong)
+#  for name in [
+#      'Email group Area',
+#      'Town',
+#      'Postal code',
+#  ]:
+#    i = fieldnames.index(name)
+#    worksheet.set_column(i, i, 12)
+#  for name in [
+#      'HOME PHONE',
+#      'Cell',
+#      'Volunteer Status',
+#      'Wish to Donate',
+#      'Donated Y /N',
+#      'Dontation Amount',
+#      'Thanked for Donation (email / phone / in person)',
+#      'Support Level',
+#      'Kims List',
+#      'Kims notes',
+#      'Follow-up (Kim Only)',
+#      'Followup (For Vol.)',
+#      'DO NOT CALL',
+#      'Member',
+#  ]:
+#    i = fieldnames.index(name)
+#    worksheet.set_column(i, i, 16)
+#  for name in ['Contact Notes']:
+#    i = fieldnames.index(name)
+#    worksheet.set_column(i, i, 32)
+#  #for name in [
+#  #    'Sign outside your home',
+#  #    'Door knocking',
+#  #    'Calling',
+#  #    'Street Can.',
+#  #    'Sign Install',
+#  #    'Data Entry',
+#  #    'Office Support',
+#  #    'Social Media & Comms',
+#  #    'Policy Research',
+#  #    'Graphic Design',
+#  #    'Coffee with Kim',
+#  #    'Events planning',
+#  #    'Event set up/pack up',
+#  #    'Food (events)',
+#  #    'Poster put up',
+#  #    'Provide Billets & Food',
+#  #    'Letters to the editor',
+#  #    'Other skills/interests',
+#  #    'ED Polling stations',
+#  #    'ED - Provide lifts ED',
+#  #    'GOTV calling',
+#  #    'Scruitineering',
+#  #    'Other Committments',
+#  #    'Fundraising',
+#  #]:
