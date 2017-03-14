@@ -22,31 +22,308 @@ from xlsxwriter.utility import xl_range
 #
 # The output is an Excel file so we can add some formatting to the data.
 
+# From https://www.canadapost.ca/tools/pg/manual/PGaddress-e.asp#1449469
+street_type_abbrs = {
+    'abbey': 'Abbey',
+    'acres': 'Acres',
+    'allee': 'Allee',
+    'alley': 'Alley',
+    'autoroute': 'Aut',
+    'aut': 'Aut',
+    'avenue': 'Ave',
+    'ave': 'Ave',
+    'av': 'Av',
+    'bay': 'Bay',
+    'beach': 'Beach',
+    'bend': 'Bend',
+    'boulevard': 'Blvd',
+    'blvd': 'Blvd',
+    'boul': 'Boul',
+    'by-pass': 'Bypass',
+    'bypass': 'Bypass',
+    'byway': 'Byway',
+    'campus': 'Campus',
+    'cape': 'Cape',
+    'carre': 'Car',
+    'car': 'Car',
+    'carrefour': 'Carref',
+    'carref': 'Carref',
+    'centre': 'Ctr',
+    'ctr': 'Ctr',
+    'c': 'C',
+    'cercle': 'Cercle',
+    'chase': 'Chase',
+    'chemin': 'Ch',
+    'ch': 'Ch',
+    'circle': 'Cir',
+    'cir': 'Cir',
+    'circuit': 'Circt',
+    'circt': 'Circt',
+    'close': 'Close',
+    'common': 'Common',
+    'concession': 'Conc',
+    'conc': 'Conc',
+    'corners': 'Crnrs',
+    'crnrs': 'Crnrs',
+    'cote': 'Cote',
+    'cour': 'Cour',
+    'cours': 'Cours',
+    'court': 'Crt',
+    'crt': 'Crt',
+    'cove': 'Cove',
+    'crescent': 'Cres',
+    'cres': 'Cres',
+    'croissant': 'Crois',
+    'crois': 'Crois',
+    'crossing': 'Cross',
+    'cross': 'Cross',
+    'cul-de-sac': 'Cds',
+    'cds': 'Cds',
+    'dale': 'Dale',
+    'dell': 'Dell',
+    'diversion': 'Divers',
+    'divers': 'Divers',
+    'downs': 'Downs',
+    'drive': 'Dr',
+    'dr': 'Dr',
+    'echangeur': 'Ech',
+    'ech': 'Ech',
+    'end': 'End',
+    'esplanade': 'Espl',
+    'espl': 'Espl',
+    'estates': 'Estate',
+    'estate': 'Estate',
+    'expressway': 'Expy',
+    'expy': 'Expy',
+    'extension': 'Exten',
+    'exten': 'Exten',
+    'farm': 'Farm',
+    'field': 'Field',
+    'forest': 'Forest',
+    'freeway': 'Fwy',
+    'fwy': 'Fwy',
+    'front': 'Front',
+    'gardens': 'Gdns',
+    'gdns': 'Gdns',
+    'gate': 'Gate',
+    'glade': 'Glade',
+    'glen': 'Glen',
+    'green': 'Green',
+    'grounds': 'Grnds',
+    'grnds': 'Grnds',
+    'grove': 'Grove',
+    'harbour': 'Harbr',
+    'harbr': 'Harbr',
+    'heath': 'Heath',
+    'heights': 'Hts',
+    'hts': 'Hts',
+    'highlands': 'Hghlds',
+    'hghlds': 'Hghlds',
+    'highway': 'Hwy',
+    'hwy': 'Hwy',
+    'hill': 'Hill',
+    'hollow': 'Hollow',
+    'ile': 'Ile',
+    'impasse': 'Imp',
+    'imp': 'Imp',
+    'inlet': 'Inlet',
+    'island': 'Island',
+    'key': 'Key',
+    'knoll': 'Knoll',
+    'landing': 'Landng',
+    'landng': 'Landng',
+    'lane': 'Lane',
+    'limits': 'Lmts',
+    'lmts': 'Lmts',
+    'line': 'Line',
+    'link': 'Link',
+    'lookout': 'Lkout',
+    'lkout': 'Lkout',
+    'loop': 'Loop',
+    'mall': 'Mall',
+    'manor': 'Manor',
+    'maze': 'Maze',
+    'meadow': 'Meadow',
+    'mews': 'Mews',
+    'montee': 'Montee',
+    'moor': 'Moor',
+    'mount': 'Mount',
+    'mountain': 'Mtn',
+    'mtn': 'Mtn',
+    'orchard': 'Orch',
+    'orch': 'Orch',
+    'parade': 'Parade',
+    'parc': 'Parc',
+    'park': 'Pk',
+    'pk': 'Pk',
+    'parkway': 'Pky',
+    'pky': 'Pky',
+    'passage': 'Pass',
+    'pass': 'Pass',
+    'path': 'Path',
+    'pathway': 'Ptway',
+    'ptway': 'Ptway',
+    'pines': 'Pines',
+    'place': 'Pl',
+    'pl': 'Pl',
+    'plateau': 'Plat',
+    'plat': 'Plat',
+    'plaza': 'Plaza',
+    'point': 'Pt',
+    'pt': 'Pt',
+    'pointe': 'Pointe',
+    'port': 'Port',
+    'private': 'Pvt',
+    'pvt': 'Pvt',
+    'promenade': 'Prom',
+    'prom': 'Prom',
+    'quai': 'Quai',
+    'quay': 'Quay',
+    'ramp': 'Ramp',
+    'rang': 'Rang',
+    'range': 'Rg',
+    'rg': 'Rg',
+    'ridge': 'Ridge',
+    'rise': 'Rise',
+    'road': 'Rd',
+    'rd': 'Rd',
+    'rond-point': 'Rdpt',
+    'rdpt': 'Rdpt',
+    'route': 'Rte',
+    'rte': 'Rte',
+    'row': 'Row',
+    'rue': 'Rue',
+    'ruelle': 'Rle',
+    'rle': 'Rle',
+    'run': 'Run',
+    'sentier': 'Sent',
+    'sent': 'Sent',
+    'square': 'Sq',
+    'sq': 'Sq',
+    'street': 'St',
+    'st': 'St',
+    'subdivision': 'Subdiv',
+    'subdiv': 'Subdiv',
+    'terrace': 'Terr',
+    'terr': 'Terr',
+    'terrasse': 'Tsse',
+    'tsse': 'Tsse',
+    'thicket': 'Thick',
+    'thick': 'Thick',
+    'towers': 'Towers',
+    'townline': 'Tline',
+    'tline': 'Tline',
+    'trail': 'Trail',
+    'turnabout': 'Trnabt',
+    'trnabt': 'Trnabt',
+    'vale': 'Vale',
+    'via': 'Via',
+    'view': 'View',
+    'village': 'Villge',
+    'villge': 'Villge',
+    'villas': 'Villas',
+    'vista': 'Vista',
+    'voie': 'Voie',
+    'walk': 'Walk',
+    'way': 'Way',
+    'wharf': 'Wharf',
+    'wood': 'Wood',
+    'wynd': 'Wynd',
+}
+
+# From https://www.canadapost.ca/tools/pg/manual/PGaddress-e.asp#1442070
+street_direction_abbrs = {
+    'east': 'E',
+    'e': 'E',
+    'est': 'E',
+    'north': 'N',
+    'n': 'N',
+    'nord': 'N',
+    'northeast': 'NE',
+    'ne': 'NE',
+    'nord-est': 'NE',
+    'northwest': 'NW',
+    'nw': 'NW',
+    'nord-ouest': 'NO',
+    'no': 'NO',
+    'south': 'S',
+    's': 'S',
+    'sud': 'S',
+    'southeast': 'SE',
+    'se': 'SE',
+    'sud-est': 'SE',
+    'southwest': 'SW',
+    'sw': 'SW',
+    'sud-ouest': 'SO',
+    'so': 'SO',
+    'west': 'W',
+    'w': 'W',
+    'ouest': 'O',
+    'o': 'O',
+}
+
 # Normalize phone numbers and postal codes, to better find duplicate
 # rows and merge duplicate values.
-phone_number_re = re.compile(
-    r'(?<= )(?:1[^0-9]?)?\(?[0-9]{3}\)?[^0-9]?[0-9]{3}[^0-9]?[0-9]{4}(?= )')
-postal_code_re = re.compile(
-    r'(?<= )[0-9A-Z](?:[0-9O][0-9A-Z](?:[ -]?[0-9O][0-9A-Z][0-9O])?)?(?= )',
-    re.IGNORECASE)
-and_re = re.compile('(?<![0-9a-z])and(?![0-9a-z])')
+phone_number_re = re.compile(r'''
+    (?<![^ ])
+    (?:1[^0-9]?)?\(?[0-9]{3}\)?[^0-9]?[0-9]{3}[^0-9]?[0-9]{4}
+    (?![^ ])
+''', re.VERBOSE)
+postal_code_re = re.compile('''
+    (?<![^ ])
+    [0-9A-Z]
+    (?:
+      [0-9O][0-9A-Z]
+      (?:[ -]?[0-9O][0-9A-Z][0-9O])?
+    )?
+    (?![^ ])
+''', re.IGNORECASE | re.VERBOSE)
+street_address_re = re.compile(
+    r'''
+        (?<![^ ])
+        ({street_type})(?![^ .])\.?\ ?
+        (?:({street_direction})(?![^ .])\.?\ ?)?
+        $
+    '''.format(
+        street_type='|'.join(re.escape(value) for value in street_type_abbrs),
+        street_direction='|'.join(
+            re.escape(value) for value in street_direction_abbrs)),
+    re.IGNORECASE | re.VERBOSE)
+ordinal_re = re.compile('''
+    (?<![^ ])
+    ([0-9]+)(?:st|nd|rd|th)
+    (?![^ ])
+''', re.VERBOSE)
+and_re = re.compile('''
+    (?<![0-9a-z])
+    and
+    (?![0-9a-z])
+''', re.VERBOSE)
 
 
 def phone_number_cb(match):
   result = match.group(0)
-  result = re.compile(r'[^0-9]').sub('', result)[-10:]
+  result = re.compile('[^0-9]').sub('', result)[-10:]
   result = result[:3] + '-' + result[3:6] + '-' + result[6:]
   return result
 
 
 def postal_code_cb(match):
   result = match.group(0)
-  result = re.compile(r'[^0-9A-Z]').sub('', result.upper())
+  result = re.compile('[^0-9A-Z]').sub('', result.upper())
   for i, char in enumerate(result):
     if char == '0O' [i % 2]:
       result = result[:i] + 'O0' [i % 2] + result[i + 1:]
   if len(result) == 6:
     result = result[:3] + ' ' + result[3:]
+  return result
+
+
+def street_address_cb(match):
+  street_type, street_direction = match.groups()
+  result = street_type_abbrs[street_type.lower()] + ' '
+  if street_direction:
+    result += street_direction_abbrs[street_direction.lower()] + ' '
   return result
 
 
@@ -56,9 +333,35 @@ def postal_code_cb(match):
 def norm(value):
   value = value.lower()
   value = ' ' + value + ' '
-  value = value.replace(' third ', ' 3rd ')
-  value = re.compile(r' *& *').sub(' and ', value)
-  value = re.compile(r'(?<![0-9a-z]) | (?![0-9a-z])').sub('', value)
+  for i, numeral in enumerate([
+      'one',
+      'two',
+      'three',
+      'four',
+      'five',
+      'six',
+      'seven',
+      'eight',
+      'nine',
+      'ten',
+  ], 1):
+    value = value.replace(' ' + numeral + ' ', ' {i} '.format(i=i))
+  for i, ordinal in enumerate([
+      'first',
+      'second',
+      'third',
+      'fourth',
+      'fifth',
+      'sixth',
+      'seventh',
+      'eighth',
+      'ninth',
+      'tenth',
+  ], 1):
+    value = value.replace(' ' + ordinal + ' ', ' {i} '.format(i=i))
+  value = ordinal_re.sub(r'\1', value)
+  value = re.compile(' *& *').sub(' and ', value)
+  value = re.compile('(?<![0-9a-z]) | (?![0-9a-z])').sub('', value)
   return value
 
 
@@ -117,7 +420,7 @@ class Dupes:
       #  from pprint import pprint
       #  pprint((diff, values))
       for i, value in enumerate(values):
-        after = value = ' ' + value
+        after = value
         for other_value in diff:
           if other_value.lower() != other_value:
             # Split at case-insensitive occurrences of other values,
@@ -125,14 +428,14 @@ class Dupes:
             # together.
             after, *parts = re.compile('(' + re.escape(other_value) + ')',
                                        re.IGNORECASE).split(after)
-            for matching, right in zip(parts[0::2], parts[1::2]):
+            for matching, adjacent in zip(parts[0::2], parts[1::2]):
               after += ''.join(
-                  min(a, b) if value[j - 1].isalnum() else max(a, b)
+                  min(a, b) if value[j - 1:j].isalnum() else max(a, b)
                   if value.lower() != value else b
                   for j, a, b in zip(
                       itertools.count(
-                          len(after)), matching, other_value)) + right
-        values[i] = after[1:]
+                          len(after)), matching, other_value)) + adjacent
+        values[i] = after
       #if len(values) > 1:
       #  from pprint import pprint
       #  pprint(values)
@@ -200,21 +503,21 @@ class Row:
             'HOME PHONE',
             'Cell',
         ]:
-          value = ' ' + value + ' '
           #match = phone_number_re.match(value, 1)
           #if not match or match.end() != len(value) - 1:
           #  from pprint import pprint
           #  pprint(value)
           value = phone_number_re.sub(phone_number_cb, value)
-          value = value[1:-1]
         elif name == 'Postal code':
-          value = ' ' + value + ' '
           #match = postal_code_re.match(value, 1)
           #if not match or match.end() != len(value) - 1:
           #  from pprint import pprint
           #  pprint(value)
           value = postal_code_re.sub(postal_code_cb, value)
-          value = value[1:-1]
+        elif name == 'Street':
+          value += ' '
+          value = street_address_re.sub(street_address_cb, value)
+          value = value[:-1]
         elif value.lower() == 'y':
           value = 'Yes'
         self.data[name] = value
@@ -228,7 +531,7 @@ class Row:
     # Then, for each row we just looked up, compare it to the current
     # row. Are they duplicates? If so, meld our associated groups of
     # duplicates together. The result is a list of every single row
-    # (Rows.registry), each one pointing to the group of duplicates it
+    # (Row.registry), each one pointing to the group of duplicates it
     # belongs to (row.dupes) -- and from there we can get the unique
     # groups of duplicate rows, which was our goal. Yay!
     unique = set()
@@ -407,9 +710,14 @@ with open(ecanvasser) as f:
         #'Contact Notes':
         #    data['Notes - Canvassing'],
         'Street':
-            ' '.join(data[name]
-                     for name in ['House Unit', 'House Number', 'Street Name']
-                     if data[name]),
+            '-'.join(value
+                     for value in [
+                         data['House Unit'],
+                         ' '.join(value for value in [
+                             data['House Number'],
+                             data['Street Name'],
+                         ] if value),
+                     ] if value),
         'Town':
             data['City'],
         'Postal code':
@@ -426,8 +734,9 @@ with open(ecanvasser) as f:
                 sorted(
                     frozenset(data[name]
                               for name in [
-                                  'Party', '2017_party_support',
-                                  '2017_support_level'
+                                  'Party',
+                                  '2017_party_support',
+                                  '2017_support_level',
                               ] if data[name]))),
         #'Kims List':
         #'Kims notes':
