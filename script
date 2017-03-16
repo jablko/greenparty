@@ -13,7 +13,7 @@ import httplib2
 from oauth2client import client
 from oauth2client import tools
 from oauth2client.file import Storage
-#import xlsxwriter
+import xlsxwriter
 from xlsxwriter.utility import xl_range
 
 # Take an export from Google Sheets and an export from Ecanvasser,
@@ -262,27 +262,90 @@ street_direction_abbrs = {
     'o': 'O',
 }
 
+# From https://www.canadapost.ca/tools/pg/manual/PGaddress-e.asp#1442119
+unit_designator_abbrs = {
+    'apartment': 'Apt',
+    'apt': 'Apt',
+    'appartement': 'App',
+    'app': 'App',
+    'suite': 'Suite',
+    'bureau': 'Bureau',
+    'unit': 'Unit',
+    'unite': 'Unite',
+}
+
+abbreviations = [(re.compile(
+    r'''
+        (?<![0-9A-Z])
+        ({abbrs})\.*
+        (?![0-9A-Z])
+    '''.format(abbrs='|'.join(re.escape(value) for value in abbrs)),
+    re.IGNORECASE | re.VERBOSE), abbrs)
+                 for abbrs in [
+                     street_type_abbrs,
+                     street_direction_abbrs,
+                     unit_designator_abbrs,
+                 ]]
+
 # Normalize phone numbers and postal codes, to better find duplicate
 # rows and merge duplicate values.
-phone_number_re = re.compile(r'''
-    (?<![^ ])
-    (?:1[^0-9]?)?\(?[0-9]{3}\)?[^0-9]?[0-9]{3}[^0-9]?[0-9]{4}
-    (?![^ ])
-''', re.VERBOSE)
+phone_number_re = re.compile('''
+    (?<![0-9A-Z])
+    1?[^0-9A-Z]*[0-9]{3}[^0-9A-Z]*[0-9]{3}[^0-9A-Z]*[0-9]{4}
+    (?![0-9A-Z])
+''', re.IGNORECASE | re.VERBOSE)
 postal_code_re = re.compile('''
-    (?<![^ ])
+    (?<![0-9A-Z])
     [0-9A-Z]
     (?:
       [0-9O][0-9A-Z]
-      (?:[ -]?[0-9O][0-9A-Z][0-9O])?
+      (?:[^0-9A-Z]*[0-9O][0-9A-Z][0-9O])?
     )?
-    (?![^ ])
+    (?![0-9A-Z])
 ''', re.IGNORECASE | re.VERBOSE)
-street_address_re = re.compile(
+house_unit = '[- 0-9A-Z]*?'
+postal_box = '(?:PO[^0-9A-Z]*)?BOX[^0-9A-Z]*[0-9]*'
+postal_box_re = re.compile(
+    '''
+        ^
+        ({postal_box})
+        [- ,/;]*
+    '''.format(postal_box=postal_box),
+    re.IGNORECASE | re.VERBOSE)
+start_re = re.compile(
     r'''
-        (?<![^ ])
-        ({street_type})(?![^ .])\.?\ ?
-        (?:({street_direction})(?![^ .])\.?\ ?)?
+        ^
+        (?:({house_unit}(?=\ *[-,/;])|\#[0-9]*)[- ,/;]+)?
+        ([0-9]+[A-Z]?)
+        (?!
+          [- ,/;]+
+          (?:{street_type})\.*
+          (?:[^0-9A-Z]+(?:{street_direction})\.*)?
+          $
+        )
+        [- ,/;]+
+    '''.format(
+        house_unit=house_unit,
+        street_type='|'.join(re.escape(value) for value in street_type_abbrs),
+        street_direction='|'.join(
+            re.escape(value) for value in street_direction_abbrs)),
+    re.IGNORECASE | re.VERBOSE)
+end_re = re.compile(
+    '''
+        [- ,/;]+
+        ((?:{unit_designator})(?![A-Z])[^0-9A-Z]*{house_unit}|{postal_box})
+        $
+    '''.format(
+        unit_designator='|'.join(
+            re.escape(value) for value in unit_designator_abbrs),
+        house_unit=house_unit,
+        postal_box=postal_box),
+    re.IGNORECASE | re.VERBOSE)
+street_name_re = re.compile(
+    r'''
+        (?<![0-9A-Z])
+        ({street_type})\.*
+        (?:[^0-9A-Z]+({street_direction})\.*)?
         $
     '''.format(
         street_type='|'.join(re.escape(value) for value in street_type_abbrs),
@@ -290,15 +353,10 @@ street_address_re = re.compile(
             re.escape(value) for value in street_direction_abbrs)),
     re.IGNORECASE | re.VERBOSE)
 ordinal_re = re.compile('''
-    (?<![^ ])
+    (?<![0-9A-Z])
     ([0-9]+)(?:st|nd|rd|th)
-    (?![^ ])
-''', re.VERBOSE)
-and_re = re.compile('''
-    (?<![0-9a-z])
-    and
-    (?![0-9a-z])
-''', re.VERBOSE)
+    (?![0-9A-Z])
+''', re.IGNORECASE | re.VERBOSE)
 
 
 def phone_number_cb(match):
@@ -319,12 +377,49 @@ def postal_code_cb(match):
   return result
 
 
-def street_address_cb(match):
+def street_name_cb(match):
   street_type, street_direction = match.groups()
-  result = street_type_abbrs[street_type.lower()] + ' '
+  result = street_type_abbrs[street_type.lower()]
   if street_direction:
-    result += street_direction_abbrs[street_direction.lower()] + ' '
+    result += ' ' + street_direction_abbrs[street_direction.lower()]
   return result
+
+
+def parse_street_address(street_name):
+  *parts, street_name = postal_box_re.split(street_name)
+  if parts:
+    adjacent, postal_box = parts
+  else:
+    postal_box = None
+  *parts, street_name = start_re.split(street_name)
+  if parts:
+    adjacent, house_unit, house_number = parts
+  else:
+    house_number = None
+    house_unit = None
+  house_unit = ' '.join(value for value in [
+      postal_box,
+      house_unit,
+  ] if value)
+  if not house_unit:
+    street_name = ' ' + street_name
+    street_name, *parts = end_re.split(street_name)
+    if parts:
+      house_unit, adjacent = parts
+    street_name = street_name[1:]
+  street_name = street_name_re.sub(street_name_cb, street_name)
+  return house_unit, house_number, street_name
+
+
+def format_street_address(data):
+  return '-'.join(value
+                  for value in [
+                      data['House Unit'],
+                      ' '.join(value for value in [
+                          data['House Number'],
+                          data['Street Name'],
+                      ] if value),
+                  ] if value)
 
 
 # This is for when we compare values. Convert them to lowercase, replace
@@ -332,7 +427,11 @@ def street_address_cb(match):
 # strip away insignificant differences.
 def norm(value):
   value = value.lower()
+  for regex, abbrs in abbreviations:
+    value = regex.sub(lambda match: abbrs[match.group(1)], value)
   value = ' ' + value + ' '
+  value = re.compile('[^0-9A-Z]+', re.IGNORECASE).sub(' ', value)
+  value = value.replace(' and ', ' ')
   for i, numeral in enumerate([
       'one',
       'two',
@@ -360,8 +459,7 @@ def norm(value):
   ], 1):
     value = value.replace(' ' + ordinal + ' ', ' {i} '.format(i=i))
   value = ordinal_re.sub(r'\1', value)
-  value = re.compile(' *& *').sub(' and ', value)
-  value = re.compile('(?<![0-9a-z]) | (?![0-9a-z])').sub('', value)
+  value = value.replace(' ', '')
   return value
 
 
@@ -398,7 +496,7 @@ class Dupes:
       names.update(row.data)
     result = {}
     for name in names:
-      diff = set(row.data.get(name) for row in self.rows if row.data.get(name))
+      diff = {row.data.get(name) for row in self.rows if row.data.get(name)}
       if not diff.isdisjoint([
           'Both',
           'Kootenay Bay',
@@ -515,9 +613,9 @@ class Row:
           #  pprint(value)
           value = postal_code_re.sub(postal_code_cb, value)
         elif name == 'Street':
-          value += ' '
-          value = street_address_re.sub(street_address_cb, value)
-          value = value[:-1]
+          self.data['House Unit'], self.data['House Number'], self.data[
+              'Street Name'] = parse_street_address(value)
+          value = format_street_address(self.data)
         elif value.lower() == 'y':
           value = 'Yes'
         self.data[name] = value
@@ -556,13 +654,22 @@ class Row:
     value = self.data.get('FIRST NAME')
     if not value:
       return False
-    value = norm(value)
     other_value = other_row.data.get('FIRST NAME')
     if not other_value:
       return False
+    value = value.replace('&', ' and ')
+    value = value.lower()
+    value = ' ' + value + ' '
+    value = re.compile('[^0-9A-Z]+', re.IGNORECASE).sub(' ', value)
+    other_value = other_value.replace('&', ' and ')
+    other_value = other_value.lower()
+    other_value = ' ' + other_value + ' '
+    other_value = re.compile('[^0-9A-Z]+', re.IGNORECASE).sub(' ', other_value)
+    if (' and ' in value) != (' and ' in other_value):
+      return False
+    value = norm(value)
     other_value = norm(other_value)
-    if not (value in other_value or other_value in value
-           ) or bool(and_re.search(value)) != bool(and_re.search(other_value)):
+    if not (value in other_value or other_value in value):
       return False
 
     for name in [
@@ -572,9 +679,9 @@ class Row:
     ]:
       value = self.data.get(name)
       if value:
-        value = norm(value)
         other_value = other_row.data.get(name)
         if other_value:
+          value = norm(value)
           other_value = norm(other_value)
           if not (value in other_value or other_value in value):
             return False
@@ -588,9 +695,9 @@ class Row:
   def is_duplicate_sufficient(self, other_row):
     value = self.data.get('EMAIL')
     if value:
-      values = frozenset(norm(value).split(', '))
       other_value = other_row.data.get('EMAIL')
       if other_value:
+        values = frozenset(norm(value).split(', '))
         other_values = frozenset(norm(other_value).split(', '))
         if not values.isdisjoint(other_values):
           return True
@@ -616,9 +723,9 @@ class Row:
     ]:
       value = self.data.get(name)
       if value:
-        value = norm(value)
         other_value = other_row.data.get(name)
         if other_value:
+          value = norm(value)
           other_value = norm(other_value)
           if value in other_value or other_value in value:
             return True
@@ -672,20 +779,6 @@ fieldnames = [' '.join(name.split()) for name in fieldnames]
 for data in before:
   Row(dict(zip(fieldnames, data)))
 
-frequencies_by_town = {}
-for row in Row.registry:
-  town = row.data.get('Town')
-  email_group_area = row.data.get('Email group Area')
-  if town and email_group_area:
-    town = norm(town)
-    frequencies = frequencies_by_town.get(town)
-    if frequencies is None:
-      frequencies_by_town[town] = frequencies = {}
-    if email_group_area in frequencies:
-      frequencies[email_group_area] += 1
-    else:
-      frequencies[email_group_area] = 1
-
 # This here is where we map Ecanvasser fields to our spreadsheet
 # columns. Column names that are commented out don't have corresponding
 # fields in Ecanvasser (I think?). Pretty much all of the Ecanvasser
@@ -710,14 +803,7 @@ with open(ecanvasser) as f:
         #'Contact Notes':
         #    data['Notes - Canvassing'],
         'Street':
-            '-'.join(value
-                     for value in [
-                         data['House Unit'],
-                         ' '.join(value for value in [
-                             data['House Number'],
-                             data['Street Name'],
-                         ] if value),
-                     ] if value),
+            format_street_address(data),
         'Town':
             data['City'],
         'Postal code':
@@ -731,13 +817,14 @@ with open(ecanvasser) as f:
         # Ecanvasser fields under one spreadsheet column.
         'Support Level':
             ', '.join(
-                sorted(
-                    frozenset(data[name]
-                              for name in [
-                                  'Party',
-                                  '2017_party_support',
-                                  '2017_support_level',
-                              ] if data[name]))),
+                sorted({
+                    data[name]
+                    for name in [
+                        'Party',
+                        '2017_party_support',
+                        '2017_support_level',
+                    ] if data[name]
+                })),
         #'Kims List':
         #'Kims notes':
         #'Follow-up (Kim Only)':
@@ -775,6 +862,32 @@ with open(ecanvasser) as f:
     }
     Row(data)
 
+frequencies = {
+    ('Street Name', 'Street Name'): {},
+    ('Town', 'Email group Area'): {},
+}
+for row in Row.registry:
+  for (key, value), freqs_by in frequencies.items():
+    key = row.data.get(key)
+    value = row.data.get(value)
+    if key and value:
+      key = norm(key)
+      freqs = freqs_by.get(key)
+      if freqs is None:
+        freqs_by[key] = freqs = {}
+      if value in freqs:
+        freqs[value] += 1
+      else:
+        freqs[value] = 1
+
+for row in Row.registry:
+  value = row.data.get('Street Name')
+  if value:
+    freqs = frequencies['Street Name', 'Street Name'][norm(value)]
+    value, count = max(freqs.items(), key=operator.itemgetter(1))
+    row.data['Street Name'] = value
+    row.data['Street'] = format_street_address(row.data)
+
 # Finally! The output. Get the unique groups of duplicate rows, merge
 # them into single rows, and add them to the output.
 unique = [
@@ -783,9 +896,17 @@ unique = [
         {row.dupes: -1 - i
          for i, row in enumerate(reversed(Row.registry))}.values())
 ]
+i = fieldnames.index('Street')
+fieldnames[i:i + 1] = ['House Unit', 'House Number', 'Street Name']
 after = []
 for dupes in unique:
   result = dupes.merge()
+  values = result.get('Street')
+  if values:
+    result['House Unit'], result['House Number'], result['Street Name'] = (
+        {value
+         for value in values if value}
+        for values in zip(*(parse_street_address(value) for value in values)))
   data = []
   for name in fieldnames:
     values = result.get(name)
@@ -797,9 +918,10 @@ for dupes in unique:
     elif name == 'Email group Area':
       values = result.get('Town')
       if values:
-        frequencies = frequencies_by_town.get(norm(', '.join(sorted(values))))
-        if frequencies is not None:
-          value, count = max(frequencies.items(), key=operator.itemgetter(1))
+        freqs = frequencies['Town', 'Email group Area'].get(
+            norm(', '.join(sorted(values))))
+        if freqs is not None:
+          value, count = max(freqs.items(), key=operator.itemgetter(1))
     data.append(value)
   while data and not data[-1]:
     data.pop()
@@ -855,7 +977,7 @@ if requests:
 #  worksheet.set_row(0, None, strong)
 #  for name in [
 #      'EMAIL',
-#      'Street',
+#      #'Street',
 #  ]:
 #    i = fieldnames.index(name)
 #    worksheet.set_column(i, i, 24)
@@ -876,6 +998,7 @@ if requests:
 #      'HOME PHONE',
 #      'Cell',
 #      'Volunteer Status',
+#      'Street Name',
 #      'Wish to Donate',
 #      'Donated Y /N',
 #      'Dontation Amount',
@@ -894,6 +1017,8 @@ if requests:
 #    i = fieldnames.index(name)
 #    worksheet.set_column(i, i, 32)
 #  #for name in [
+#  #    'House Unit',
+#  #    'House Number',
 #  #    'Sign outside your home',
 #  #    'Door knocking',
 #  #    'Calling',
