@@ -612,13 +612,14 @@ class Row:
           #  from pprint import pprint
           #  pprint(value)
           value = postal_code_re.sub(postal_code_cb, value)
-        elif name == 'Street':
-          self.data['House Unit'], self.data['House Number'], self.data[
-              'Street Name'] = parse_street_address(value)
-          value = format_street_address(self.data)
         elif value.lower() == 'y':
           value = 'Yes'
         self.data[name] = value
+    value = self.data.get('Street')
+    if value:
+      self.data['House Unit'], self.data['House Number'], self.data[
+          'Street Name'] = parse_street_address(value)
+      self.data['Street'] = format_street_address(self.data)
 
     self.dupes = Dupes(self)
     Row.registry.append(self)
@@ -786,80 +787,62 @@ for data in before:
 with open(ecanvasser) as f:
   reader = csv.DictReader(f)
   for data in reader:
-    data = {
-        'EMAIL':
-            data['Email Address'],
-        'FIRST NAME':
-            data['First Name'],
-        'LAST NAME':
-            data['Surname'],
-        #'Email group Area':
-        'HOME PHONE':
-            data['Home Phone'],
-        'Cell':
-            data['Mobile Phone'],
-        'Volunteer Status':
-            data['2017_volunteer_status'],
-        #'Contact Notes':
-        #    data['Notes - Canvassing'],
-        'Street':
-            format_street_address(data),
-        'Town':
-            data['City'],
-        'Postal code':
-            data['Zip'],
-        #'Wish to Donate':
-        'Donated Y /N':
-            data['2017_donor'],
-        #'Dontation Amount':
-        #'Thanked for Donation (email / phone / in person)':
-        # This shimmy shamma puts the combined, unique values of three
-        # Ecanvasser fields under one spreadsheet column.
-        'Support Level':
-            ', '.join(
-                sorted({
-                    data[name]
-                    for name in [
-                        'Party',
-                        '2017_party_support',
-                        '2017_support_level',
-                    ] if data[name]
-                })),
-        #'Kims List':
-        #'Kims notes':
-        #'Follow-up (Kim Only)':
-        #'Followup (For Vol.)':
-        'DO NOT CALL':
-            data['2017_do_not_call'],
-        'Member':
-            data['2017_member'],
-        'Sign outside your home':
-            data['2017_lawn_sign_request'],
-        #'Door knocking':
-        #'Calling':
-        #'Street Can.':
-        #'Sign Install':
-        #'Data Entry':
-        #'Office Support':
-        #'Social Media & Comms':
-        #'Policy Research':
-        #'Graphic Design':
-        #'Coffee with Kim':
-        #    data['Coffee With Kim'],
-        #'Events planning':
-        #'Event set up/pack up':
-        #'Food (events)':
-        #'Poster put up':
-        #'Provide Billets & Food':
-        #'Letters to the editor':
-        #'Other skills/interests':
-        #'ED Polling stations':
-        #'ED - Provide lifts ED':
-        #'GOTV calling':
-        #'Scruitineering':
-        #'Other Committments':
-        #'Fundraising':
-    }
+    data['EMAIL'] = data['Email Address']
+    data['FIRST NAME'] = data['First Name']
+    data['LAST NAME'] = data['Surname']
+    #data['Email group Area'] =
+    data['HOME PHONE'] = data['Home Phone']
+    data['Cell'] = data['Mobile Phone']
+    data['Volunteer Status'] = data['2017_volunteer_status']
+    #data['Contact Notes'] = data['Notes - Canvassing']
+    data['Street'] = format_street_address(data)
+    data['Town'] = data['City']
+    data['Postal code'] = data['Zip']
+    #data['Wish to Donate'] =
+    data['Donated Y /N'] = data['2017_donor']
+    #data['Dontation Amount'] =
+    #data['Thanked for Donation (email / phone / in person)'] =
+    # This shimmy shamma puts the combined, unique values of three
+    # Ecanvasser fields under one spreadsheet column.
+    data['Support Level'] = ', '.join(
+        sorted({
+            data[name]
+            for name in [
+                'Party',
+                '2017_party_support',
+                '2017_support_level',
+            ] if data[name]
+        }))
+    #data['Kims List'] =
+    #data['Kims notes'] =
+    #data['Follow-up (Kim Only)'] =
+    #data['Followup (For Vol.)'] =
+    data['DO NOT CALL'] = data['2017_do_not_call']
+    data['Member'] = data['2017_member']
+    data['Sign outside your home'] = data['2017_lawn_sign_request']
+    #data['Door knocking'] =
+    #data['Calling'] =
+    #data['Street Can.'] =
+    #data['Sign Install'] =
+    #data['Data Entry'] =
+    #data['Office Support'] =
+    #data['Social Media & Comms'] =
+    #data['Policy Research'] =
+    #data['Graphic Design'] =
+    #data['Coffee with Kim'] = data['Coffee With Kim']
+    #data['Events planning'] =
+    #data['Event set up/pack up'] =
+    #data['Food (events)'] =
+    #data['Poster put up'] =
+    #data['Provide Billets & Food'] =
+    #data['Letters to the editor'] =
+    #data['Other skills/interests'] =
+    #data['ED Polling stations'] =
+    #data['ED - Provide lifts ED'] =
+    #data['GOTV calling'] =
+    #data['Scruitineering'] =
+    #data['Other Committments'] =
+    #data['Fundraising'] =
     Row(data)
 
 frequencies = {
@@ -898,6 +881,10 @@ unique = [
 ]
 i = fieldnames.index('Street')
 fieldnames[i:i + 1] = ['House Unit', 'House Number', 'Street Name']
+i = fieldnames.index('Postal code')
+fieldnames.insert(i + 1, 'Precinct')
+i = fieldnames.index('Sign outside your home')
+fieldnames.insert(i + 1, '2017_gotv_voted')
 after = []
 for dupes in unique:
   result = dupes.merge()
@@ -1019,7 +1006,9 @@ if requests:
 #  #for name in [
 #  #    'House Unit',
 #  #    'House Number',
+#  #    'Precinct',
 #  #    'Sign outside your home',
+#  #    '2017_gotv_voted',
 #  #    'Door knocking',
 #  #    'Calling',
 #  #    'Street Can.',
