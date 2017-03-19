@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<link rel=stylesheet href=http://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css>
+<style>
+@page {
+  margin: 0;
+  size: {{ request.form.orientation }};
+}
+body {
+  font-size: 10px;
+}
+thead {
+  font-size: 9px;
+}
+td.center {
+  text-align: center;
+}
+td.right {
+  text-align: right;
+}
+</style>
+<table class="table table-condensed">
+  <thead>
+    <tr>
+      <th>First Name
+      <th>Last Name
+      <th>House Unit #
+      <th>House Number
+      <th>Street Name
+      <th>Support Level
+      <th>Support? (NDP/LIB/GRN)
+      <th>Contact Information
+      <th>Lawn Sign?
+      <th>GOTV Ride?
+      <th>Volunteer?
+      <th>Notes
+  <tbody>
+  {% for data in reader %}
+    <tr>
+      <th scope=row>{{ data['First Name'] }}
+      <th scope=row>{{ data['Surname'] }}
+      <td class=right>{{ data['House Unit'] }}
+      <td class=right>{{ data['House Number'] }}
+      <td>{{ data['Street Name'] }}
+      <td>{{ data['2017_support_level']|support_level }}
+      <td>{{ data['2017_party_support']|support_level }}
+      <td>{{ data|contact_information|join(' ') }}
+      <td class=center>
+        <input{% if data['2017_lawn_sign_request'] == 'Requested' %} checked{% endif %} type=checkbox>
+      <td class=center>
+        <input{% if data['2017_gotv_ride'] == 'Requested' %} checked{% endif %} type=checkbox>
+      <td>{{ data['2017_volunteer_status'] }}
+      <td>
+  {% endfor %}
+</table>
