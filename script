@@ -13,6 +13,9 @@ import httplib2
 from oauth2client import client
 from oauth2client import tools
 from oauth2client.file import Storage
+from osgeo import gdal
+from osgeo import ogr
+from osgeo import osr
 import xlsxwriter
 from xlsxwriter.utility import xl_range
 
@@ -645,13 +648,13 @@ class Row:
           unique.update(result)
           result.append(self)
     for other_row in unique:
-      if other_row not in self.dupes.rows and self.is_duplicate_required(
-          other_row) and self.is_duplicate_sufficient(other_row):
+      if other_row not in self.dupes.rows and self.required(
+          other_row) and self.sufficient(other_row):
         self.dupes.rows |= other_row.dupes.rows
         for dupes_row in other_row.dupes.rows:
           dupes_row.dupes = self.dupes
 
-  def is_duplicate_required(self, other_row):
+  def required(self, other_row):
     value = self.data.get('FIRST NAME')
     if not value:
       return False
@@ -693,7 +696,7 @@ class Row:
   # of email address in common (rows can potentially have multiple phone
   # numbers and multiple email addresses). Street addresses and postal
   # codes match if they're substrings of each other.
-  def is_duplicate_sufficient(self, other_row):
+  def sufficient(self, other_row):
     value = self.data.get('EMAIL')
     if value:
       other_value = other_row.data.get('EMAIL')
@@ -845,23 +848,53 @@ with open(ecanvasser) as f:
     #data['Fundraising'] =
     Row(data)
 
+driver = gdal.GetDriverByName('Memory')
+memory_ds = driver.Create('', 0, 0, 0)
+input_lyr = memory_ds.CreateLayer('')
+input_lyr.CreateField(ogr.FieldDefn('i', ogr.OFTInteger))
+feat = ogr.Feature(input_lyr.GetLayerDefn())
+pt = ogr.Geometry(ogr.wkbPoint)
+filename = 'edvas02232017.shp'
+ds = gdal.OpenEx(filename)
+method_lyr = ds.GetLayer()
+proj = method_lyr.GetSpatialRef()
+geog = proj.CloneGeogCS()
+ct = osr.CoordinateTransformation(geog, proj)
+for i, row in enumerate(Row.registry):
+  x = row.data.get('Longitude')
+  y = row.data.get('Latitude')
+  if x and y:
+    x = float(x)
+    y = float(y)
+    pt.SetPoint_2D(0, x, y)
+    pt.Transform(ct)
+    feat.SetGeometry(pt)
+    feat.SetField('i', i)
+    input_lyr.CreateFeature(feat)
+result_lyr = memory_ds.CreateLayer('')
+input_lyr.Intersection(method_lyr, result_lyr)
+for feat in result_lyr:
+  i = feat.GetField('i')
+  row = Row.registry[i]
+  row.data['Precinct'] = feat.GetField('EDVA_CODE')
+
 frequencies = {
     ('Street Name', 'Street Name'): {},
     ('Town', 'Email group Area'): {},
 }
 for row in Row.registry:
-  for (key, value), freqs_by in frequencies.items():
-    key = row.data.get(key)
-    value = row.data.get(value)
-    if key and value:
-      key = norm(key)
-      freqs = freqs_by.get(key)
+  for (x, y), freqs_by in frequencies.items():
+    x = row.data.get(x)
+    y = row.data.get(y)
+    if x and y:
+      x = norm(x)
+      freqs = freqs_by.get(x)
       if freqs is None:
-        freqs_by[key] = freqs = {}
-      if value in freqs:
-        freqs[value] += 1
+        freqs_by[x] = freqs = {}
+      if y in freqs:
+        freqs[y] += 1
       else:
-        freqs[value] = 1
+        freqs[y] = 1
 
 for row in Row.registry:
   value = row.data.get('Street Name')
@@ -879,12 +912,12 @@ unique = [
         {row.dupes: -1 - i
          for i, row in enumerate(reversed(Row.registry))}.values())
 ]
-i = fieldnames.index('Street')
-fieldnames[i:i + 1] = ['House Unit', 'House Number', 'Street Name']
-i = fieldnames.index('Postal code')
-fieldnames.insert(i + 1, 'Precinct')
-i = fieldnames.index('Sign outside your home')
-fieldnames.insert(i + 1, '2017_gotv_voted')
+j = fieldnames.index('Street')
+fieldnames[j:j + 1] = ['House Unit', 'House Number', 'Street Name']
+j = fieldnames.index('Postal code')
+fieldnames.insert(j + 1, 'Precinct')
+j = fieldnames.index('Sign outside your home')
+fieldnames.insert(j + 1, '2017_gotv_voted')
 after = []
 for dupes in unique:
   result = dupes.merge()
@@ -951,8 +984,8 @@ if requests:
 #with xlsxwriter.Workbook('spreadsheet.xlsx') as workbook:
 #  worksheet = workbook.add_worksheet()
 #  worksheet.write_row(0, 0, fieldnames)
-#  for i, data in enumerate(after):
-#    worksheet.write_row(i + 1, 0, data)
+#  for i, data in enumerate(after, 1):
+#    worksheet.write_row(i, 0, data)
 #
 #  # The rest, from here to the end, is formatting. Make the output look
 #  # roughly like the existing spreadsheet.
@@ -966,21 +999,21 @@ if requests:
 #      'EMAIL',
 #      #'Street',
 #  ]:
-#    i = fieldnames.index(name)
-#    worksheet.set_column(i, i, 24)
+#    j = fieldnames.index(name)
+#    worksheet.set_column(j, j, 24)
 #  for name in [
 #      'FIRST NAME',
 #      'LAST NAME',
 #  ]:
-#    i = fieldnames.index(name)
-#    worksheet.set_column(i, i, 16, strong)
+#    j = fieldnames.index(name)
+#    worksheet.set_column(j, j, 16, strong)
 #  for name in [
 #      'Email group Area',
 #      'Town',
 #      'Postal code',
 #  ]:
-#    i = fieldnames.index(name)
-#    worksheet.set_column(i, i, 12)
+#    j = fieldnames.index(name)
+#    worksheet.set_column(j, j, 12)
 #  for name in [
 #      'HOME PHONE',
 #      'Cell',
@@ -998,11 +1031,11 @@ if requests:
 #      'DO NOT CALL',
 #      'Member',
 #  ]:
-#    i = fieldnames.index(name)
-#    worksheet.set_column(i, i, 16)
+#    j = fieldnames.index(name)
+#    worksheet.set_column(j, j, 16)
 #  for name in ['Contact Notes']:
-#    i = fieldnames.index(name)
-#    worksheet.set_column(i, i, 32)
+#    j = fieldnames.index(name)
+#    worksheet.set_column(j, j, 32)
 #  #for name in [
 #  #    'House Unit',
 #  #    'House Number',

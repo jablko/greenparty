@@ -23,16 +23,16 @@ td.right {
     <tr>
       <th>First Name
       <th>Last Name
-      <th>House Unit #
-      <th>House Number
-      <th>Street Name
-      <th>Support Level
-      <th>Support? (NDP/LIB/GRN)
-      <th>Contact Information
-      <th>Lawn Sign?
-      <th>GOTV Ride?
-      <th>Volunteer?
-      <th>Notes
+      <th style=width:0>House Unit
+      <th style=width:0>House Number
+      <th style=width:10%>Street Name
+      <th style=width:0>Support Level
+      <th style=width:0>Phone
+      <th style=width:0>Email
+      <th style=width:0>Lawn Sign?
+      <th style=width:0>GOTV Ride?
+      <th style=width:0>Volunteer?
+      <th style=width:20%>Notes
   <tbody>
   {% for data in reader %}
     <tr>
@@ -41,9 +41,9 @@ td.right {
       <td class=right>{{ data['House Unit'] }}
       <td class=right>{{ data['House Number'] }}
       <td>{{ data['Street Name'] }}
-      <td>{{ data['2017_support_level']|support_level }}
-      <td>{{ data['2017_party_support']|support_level }}
-      <td>{{ data|contact_information|join(' ') }}
+      <td>{{ data|support_level|sort|join(' ') }}
+      <td>{{ data|phone|join(' ') }}
+      <td>{{ data['Email Address'] }}
       <td class=center>
         <input{% if data['2017_lawn_sign_request'] == 'Requested' %} checked{% endif %} type=checkbox>
       <td class=center>

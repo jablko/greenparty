@@ -23,23 +23,26 @@ app = Flask(__name__)
 
 
 @app.template_filter()
-def support_level(value):
-  if value.endswith(' Support'):
-    value = value[:-len(' Support')]
-  return value
+def support_level(data):
+  for value in {
+      data['Party'],
+      data['2017_party_support'],
+      data['2017_support_level'],
+  }:
+    if value:
+      if value.endswith(' Support'):
+        value = value[:-len(' Support')]
+      yield value
 
 
 @app.template_filter()
-def contact_information(data):
+def phone(data):
   value = data['Home Phone']
   if value:
-    yield 'H:' + value
+    yield 'H:' + value.replace(' ', '')
   value = data['Mobile Phone']
   if value:
-    yield 'C:' + value
-  value = data['Email Address']
-  if value:
-    yield value
+    yield 'C:' + value.replace(' ', '')
 
 
 @app.route('/', methods=['GET', 'POST'])
