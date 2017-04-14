@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 
+import collections
 import configparser
 import csv
 import difflib
+import functools
 import itertools
-import operator
 import re
 import sys
 
@@ -277,18 +278,18 @@ unit_designator_abbrs = {
     'unite': 'Unite',
 }
 
-abbreviations = [(re.compile(
+abbrs = {
+    **street_type_abbrs,
+    **street_direction_abbrs,
+    **unit_designator_abbrs,
+}
+abbrs_re = re.compile(
     r'''
         (?<![0-9A-Z])
         ({abbrs})\.*
         (?![0-9A-Z])
     '''.format(abbrs='|'.join(re.escape(value) for value in abbrs)),
-    re.IGNORECASE | re.VERBOSE), abbrs)
-                 for abbrs in [
-                     street_type_abbrs,
-                     street_direction_abbrs,
-                     unit_designator_abbrs,
-                 ]]
+    re.IGNORECASE | re.VERBOSE)
 
 # Normalize phone numbers and postal codes, to better find duplicate
 # rows and merge duplicate values.
@@ -362,6 +363,10 @@ ordinal_re = re.compile('''
 ''', re.IGNORECASE | re.VERBOSE)
 
 
+def abbrs_cb(match):
+  return abbrs[match.group(1)]
+
+
 def phone_number_cb(match):
   result = match.group(0)
   result = re.compile('[^0-9]').sub('', result)[-10:]
@@ -428,10 +433,10 @@ def format_street_address(data):
 # This is for when we compare values. Convert them to lowercase, replace
 # "&" with "and", strip all spaces around punctuation, etc. Basically
 # strip away insignificant differences.
+@functools.lru_cache(None)
 def norm(value):
   value = value.lower()
-  for regex, abbrs in abbreviations:
-    value = regex.sub(lambda match: abbrs[match.group(1)], value)
+  value = abbrs_re.sub(abbrs_cb, value)
   value = ' ' + value + ' '
   value = re.compile('[^0-9A-Z]+', re.IGNORECASE).sub(' ', value)
   value = value.replace(' and ', ' ')
@@ -466,82 +471,23 @@ def norm(value):
   return value
 
 
+@functools.lru_cache(None)
+def norm_and(value):
+  value = value.replace('&', ' and ')
+  value = value.lower()
+  value = ' ' + value + ' '
+  value = re.compile('[^0-9A-Z]+', re.IGNORECASE).sub(' ', value)
+  return value
+
+
 # A group of duplicate rows. This is a class mostly because sets aren't
 # hashable, and at the end of the day we want the *unique* groups of
 # duplicate rows. Custom classes hash on id() (or something), which
 # works for us!
-class Dupes:
+class Hashable:
 
-  def __init__(self, row):
-    self.rows = {row}
-
-  # Merge duplicate rows into a single row. Basically combine duplicate
-  # information without throwing any information away. So if one row is
-  # blank and another isn't, use the non-blank value, and if two rows
-  # share the same value, use that value once. Do some fancy stuff with
-  # substrings and capitalization.
-  #
-  # The result is a dictionary of lists. If a list has multiple values,
-  # then we couldn't merge it -- and the caller can do with that what it
-  # likes (join them with commas, etc.).
-  #
-  # Start with the unique values for each field. Find the values that
-  # aren't substrings of any other values (e.g. "3 Comp 32" and "RR 2,
-  # SITE 3 COMP 32"). Merge capitalization as follows: For each
-  # character, if it's uppercase in any value, uppercase it in the
-  # result (e.g. "MacDonald"), *unless* it's at the start of a word, in
-  # which case if it's lowercase in any value that contains at least one
-  # uppercase letter (i.e. isn't all lowercase), then lowercase it in
-  # the result (e.g. "de Saeger"). Whew!
-  def merge(self):
-    names = set()
-    for row in self.rows:
-      names.update(row.data)
-    result = {}
-    for name in names:
-      diff = {row.data.get(name) for row in self.rows if row.data.get(name)}
-      if not diff.isdisjoint([
-          'Both',
-          'Kootenay Bay',
-          'Membership: Annual',
-          'Provincial',
-          'Requested',
-          'y a',
-      ]):
-        diff.discard('Yes')
-      values = list({
-          value.lower(): value
-          for value in diff
-          if not any(value.lower() in other_value.lower()
-                     for other_value in diff
-                     if value.lower() != other_value.lower())
-      }.values())
-      diff.difference_update(values)
-      #if diff:
-      #  from pprint import pprint
-      #  pprint((diff, values))
-      for i, value in enumerate(values):
-        after = value
-        for other_value in diff:
-          if other_value.lower() != other_value:
-            # Split at case-insensitive occurrences of other values,
-            # merge capitalization and then put everything back
-            # together.
-            after, *parts = re.compile('(' + re.escape(other_value) + ')',
-                                       re.IGNORECASE).split(after)
-            for matching, adjacent in zip(parts[0::2], parts[1::2]):
-              after += ''.join(
-                  min(a, b) if value[j - 1:j].isalnum() else max(a, b)
-                  if value.lower() != value else b
-                  for j, a, b in zip(
-                      itertools.count(
-                          len(after)), matching, other_value)) + adjacent
-        values[i] = after
-      #if len(values) > 1:
-      #  from pprint import pprint
-      #  pprint(values)
-      result[name] = values
-    return result
+  def __init__(self, value):
+    self.value = value
 
 
 # Gather rows into groups of duplicates.
@@ -584,7 +530,6 @@ class Dupes:
 # each other (none are identical), then this isn't the same as pairwise
 # comparing *every* row -- but that's a pretty rare and degenerate case.
 class Row:
-
   registry = []
   by = {
       'EMAIL': {},
@@ -592,7 +537,8 @@ class Row:
       'LAST NAME': {},
       'HOME PHONE': {},
       'Cell': {},
-      'Street': {},
+      'House Number': {},
+      'Street Name': {},
   }
 
   def __init__(self, data):
@@ -624,7 +570,7 @@ class Row:
           'Street Name'] = parse_street_address(value)
       self.data['Street'] = format_street_address(self.data)
 
-    self.dupes = Dupes(self)
+    self.dupes = Hashable({self})
     Row.registry.append(self)
 
     # This is the main de-duping code right here. We index rows by a
@@ -648,10 +594,10 @@ class Row:
           unique.update(result)
           result.append(self)
     for other_row in unique:
-      if other_row not in self.dupes.rows and self.required(
+      if other_row not in self.dupes.value and self.required(
           other_row) and self.sufficient(other_row):
-        self.dupes.rows |= other_row.dupes.rows
-        for dupes_row in other_row.dupes.rows:
+        self.dupes.value |= other_row.dupes.value
+        for dupes_row in other_row.dupes.value:
           dupes_row.dupes = self.dupes
 
   def required(self, other_row):
@@ -661,15 +607,7 @@ class Row:
     other_value = other_row.data.get('FIRST NAME')
     if not other_value:
       return False
-    value = value.replace('&', ' and ')
-    value = value.lower()
-    value = ' ' + value + ' '
-    value = re.compile('[^0-9A-Z]+', re.IGNORECASE).sub(' ', value)
-    other_value = other_value.replace('&', ' and ')
-    other_value = other_value.lower()
-    other_value = ' ' + other_value + ' '
-    other_value = re.compile('[^0-9A-Z]+', re.IGNORECASE).sub(' ', other_value)
-    if (' and ' in value) != (' and ' in other_value):
+    if (' and ' in norm_and(value)) != (' and ' in norm_and(other_value)):
       return False
     value = norm(value)
     other_value = norm(other_value)
@@ -678,8 +616,8 @@ class Row:
 
     for name in [
         'LAST NAME',
-        'Street',
-        'Postal code',
+        'House Number',
+        'Street Name',
     ]:
       value = self.data.get(name)
       if value:
@@ -701,8 +639,8 @@ class Row:
     if value:
       other_value = other_row.data.get('EMAIL')
       if other_value:
-        values = frozenset(norm(value).split(', '))
-        other_values = frozenset(norm(other_value).split(', '))
+        values = {norm(value) for value in value.split(', ')}
+        other_values = {norm(value) for value in other_value.split(', ')}
         if not values.isdisjoint(other_values):
           return True
 
@@ -714,15 +652,16 @@ class Row:
     ]:
       value = self.data.get(name)
       if value:
-        values.update(norm(value).split(', '))
+        values.update(norm(value) for value in value.split(', '))
       other_value = other_row.data.get(name)
       if other_value:
-        other_values.update(norm(other_value).split(', '))
+        other_values.update(norm(value) for value in other_value.split(', '))
     if not values.isdisjoint(other_values):
       return True
 
     for name in [
-        'Street',
+        'House Number',
+        'Street Name',
         'Postal code',
     ]:
       value = self.data.get(name)
@@ -735,6 +674,74 @@ class Row:
             return True
 
     return False
+
+
+# Merge duplicate rows into a single row. Basically combine duplicate
+# information without throwing any information away. So if one row is
+# blank and another isn't, use the non-blank value, and if two rows
+# share the same value, use that value once. Do some fancy stuff with
+# substrings and capitalization.
+#
+# The result is a dictionary of lists. If a list has multiple values,
+# then we couldn't merge it -- and the caller can do with that what it
+# likes (join them with commas, etc.).
+#
+# Start with the unique values for each field. Find the values that
+# aren't substrings of any other values (e.g. "3 Comp 32" and "RR 2,
+# SITE 3 COMP 32"). Merge capitalization as follows: For each character,
+# if it's uppercase in any value, uppercase it in the result (e.g.
+# "MacDonald"), *unless* it's at the start of a word, in which case if
+# it's lowercase in any value that contains at least one uppercase
+# letter (i.e. isn't all lowercase), then lowercase it in the result
+# (e.g. "de Saeger"). Whew!
+def merge(rows):
+  names = set()
+  for row in rows:
+    names.update(row.data)
+  result = {}
+  for name in names:
+    diff = {row.data.get(name) for row in rows if row.data.get(name)}
+    if not diff.isdisjoint([
+        'Both',
+        'Kootenay Bay',
+        'Membership: Annual',
+        'Provincial',
+        'Requested',
+        'y a',
+    ]):
+      diff.discard('Yes')
+    values = list({
+        value.lower(): value
+        for value in diff
+        if not any(value.lower() in other_value.lower() for other_value in diff
+                   if value.lower() != other_value.lower())
+    }.values())
+    diff.difference_update(values)
+    #if diff:
+    #  from pprint import pprint
+    #  pprint((diff, values))
+    for i, value in enumerate(values):
+      after = value
+      for other_value in diff:
+        if other_value.lower() != other_value:
+          # Split at case-insensitive occurrences of other values,
+          # merge capitalization and then put everything back
+          # together.
+          after, *parts = re.compile('(' + re.escape(other_value) + ')',
+                                     re.IGNORECASE).split(after)
+          for matching, adjacent in zip(parts[0::2], parts[1::2]):
+            after += ''.join(
+                min(a, b) if value[j - 1:j].isalnum() else max(a, b)
+                if value.lower() != value else b
+                for j, a, b in zip(
+                    itertools.count(
+                        len(after)), matching, other_value)) + adjacent
+      values[i] = after
+    #if len(values) > 1:
+    #  from pprint import pprint
+    #  pprint(values)
+    result[name] = values
+  return result
 
 
 # Okay, welcome to the body of the script! Take two filenames, one for
@@ -848,6 +855,15 @@ with open(ecanvasser) as f:
     #data['Fundraising'] =
     Row(data)
 
+# Finally! The output. Get the unique groups of duplicate rows, merge
+# them into single rows, and add them to the output.
+unique = [
+    Row.registry[i].dupes
+    for i in sorted(
+        {row.dupes: -1 - i
+         for i, row in enumerate(reversed(Row.registry))}.values())
+]
+
 driver = gdal.GetDriverByName('Memory')
 memory_ds = driver.Create('', 0, 0, 0)
 input_lyr = memory_ds.CreateLayer('')
@@ -878,40 +894,72 @@ for feat in result_lyr:
   row = Row.registry[i]
   row.data['Precinct'] = feat.GetField('EDVA_CODE')
 
-frequencies = {
-    ('Street Name', 'Street Name'): {},
-    ('Town', 'Email group Area'): {},
-}
-for row in Row.registry:
-  for (x, y), freqs_by in frequencies.items():
-    x = row.data.get(x)
-    y = row.data.get(y)
-    if x and y:
-      x = norm(x)
-      freqs = freqs_by.get(x)
-      if freqs is None:
-        freqs_by[x] = freqs = {}
-      if y in freqs:
-        freqs[y] += 1
-      else:
-        freqs[y] = 1
 
+@functools.lru_cache(None)
+def get_frequencies(x, y):
+  result = {}
+  for row in Row.registry:
+    key = tuple(row.data.get(name) for name in x)
+    if all(key):
+      key = tuple(norm(value) for value in key)
+      freqs = result.get(key)
+      if freqs is None:
+        result[key] = freqs = collections.Counter()
+      value = row.data.get(y)
+      if value:
+        freqs[value] += 1
+  return result
+
+
+index = get_frequencies(frozenset(['Street Name']), 'Street Name')
 for row in Row.registry:
   value = row.data.get('Street Name')
   if value:
-    freqs = frequencies['Street Name', 'Street Name'][norm(value)]
-    value, count = max(freqs.items(), key=operator.itemgetter(1))
+    value = norm(value)
+    freqs = index[value,]
+    (value, count), = freqs.most_common(1)
     row.data['Street Name'] = value
     row.data['Street'] = format_street_address(row.data)
 
-# Finally! The output. Get the unique groups of duplicate rows, merge
-# them into single rows, and add them to the output.
-unique = [
-    Row.registry[i].dupes
-    for i in sorted(
-        {row.dupes: -1 - i
-         for i, row in enumerate(reversed(Row.registry))}.values())
-]
+
+class Group:
+
+  def __init__(self, freqs):
+    self.freqs = freqs
+    self.dupes = Hashable([self])
+
+
+for x, y in [
+    (frozenset(['House Number', 'Street Name', 'Town']), 'Town'),
+    (frozenset(['House Number', 'Street Name', 'Town']), 'Postal code'),
+    (frozenset(['House Number', 'Street Name', 'Town']), 'Precinct'),
+]:
+  index = {key: Group(freqs) for key, freqs in get_frequencies(x, y).items()}
+  for dupes in unique:
+    my_unique = set()
+    for row in dupes.value:
+      key = tuple(row.data.get(name) for name in x)
+      if all(key):
+        key = tuple(norm(value) for value in key)
+        my_unique.add(index[key].dupes)
+    if len(my_unique) > 1:
+      result_freqs = collections.Counter()
+      result_dupes = Hashable([])
+      for my_dupes in my_unique:
+        result_freqs += my_dupes.value[0].freqs
+        result_dupes.value += my_dupes.value
+        for group in my_dupes.value:
+          group.freqs = result_freqs
+          group.dupes = result_dupes
+  for row in Row.registry:
+    key = tuple(row.data.get(name) for name in x)
+    if all(key):
+      key = tuple(norm(value) for value in key)
+      freqs = index[key].freqs
+      if freqs:
+        (value, count), = freqs.most_common(1)
+        row.data[y] = value
+
 j = fieldnames.index('Street')
 fieldnames[j:j + 1] = ['House Unit', 'House Number', 'Street Name']
 j = fieldnames.index('Postal code')
@@ -920,7 +968,24 @@ j = fieldnames.index('Sign outside your home')
 fieldnames.insert(j + 1, '2017_gotv_voted')
 after = []
 for dupes in unique:
-  result = dupes.merge()
+  if any(
+      row.data.get('House Number') and row.data.get('Street Name') and
+      row.data.get('Town') for row in dupes.value):
+    for row in dupes.value:
+      if not (row.data.get('House Number') and
+              row.data.get('Street Name')) and 'Town' in row.data:
+        del row.data['Town']
+  if not any(row.data.get('Email group Area') for row in dupes.value):
+    index = get_frequencies(frozenset(['Town']), 'Email group Area')
+    for row in dupes.value:
+      value = row.data.get('Town')
+      if value:
+        value = norm(value)
+        freqs = index[value,]
+        if freqs:
+          (value, count), = freqs.most_common(1)
+          row.data['Email group Area'] = value
+  result = merge(dupes.value)
   values = result.get('Street')
   if values:
     result['House Unit'], result['House Number'], result['Street Name'] = (
@@ -930,18 +995,12 @@ for dupes in unique:
   data = []
   for name in fieldnames:
     values = result.get(name)
-    # When updating, values with no data are skipped. To clear data, use
-    # an empty string ("").
-    value = ''
     if values:
       value = ', '.join(sorted(values))
-    elif name == 'Email group Area':
-      values = result.get('Town')
-      if values:
-        freqs = frequencies['Town', 'Email group Area'].get(
-            norm(', '.join(sorted(values))))
-        if freqs is not None:
-          value, count = max(freqs.items(), key=operator.itemgetter(1))
+    else:
+      # When updating, values with no data are skipped. To clear data, use
+      # an empty string ("").
+      value = ''
     data.append(value)
   while data and not data[-1]:
     data.pop()
