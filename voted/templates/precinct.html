@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<title>{{ request.view_args.precinct }}</title>
+<link rel=stylesheet href=http://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css>
+<style>
+body {
+  padding-top: 50px;
+}
+.navbar > .container .navbar-brand {
+  margin-left: 0;
+}
+</style>
+<form method=post>
+  <nav class="navbar navbar-default navbar-fixed-top">
+    <div class=container>
+      <div class=navbar-header>
+        <a class="btn btn-default glyphicon glyphicon-arrow-left navbar-btn navbar-left" href="." title=Back></a>
+        <span class=navbar-brand>{{ request.view_args.precinct }}</span>
+        <input class="btn btn-success navbar-btn" value="Save Changes" type=submit>
+      </div>
+    </div>
+  </nav>
+  <div class=container>
+    <table class="table table-striped">
+      <thead>
+        <tr>
+          <th style=width:0>2017_ebc_vsn
+          <th style=width:0>2017_gotv_voted
+          <th>FIRST NAME
+          <th>LAST NAME
+          <th>Street Address
+      <tbody>
+      {% for i, row_data in rows %}
+        <input name=i value="{{ i }}" type=hidden>
+        <tr{% if row_data['2017_gotv_voted']|voted %} class=info{% endif %}>
+          <td class=text-right>{{ row_data['2017_ebc_vsn'] }}
+            <td class=text-center><input name="{{ i }}" {% if row_data['2017_gotv_voted']|voted %}value="{{ row_data['2017_gotv_voted'] }}" checked{% else %}value=Voted{% endif %} type=checkbox>
+          <th scope=row>{{ row_data['FIRST NAME'] }}
+          <th scope=row>{{ row_data['LAST NAME'] }}
+          <td>{{ row_data|street_address }}
+      {% endfor %}
+    </table>
+  </div>
+</form>
+<script>
+document.getElementsByTagName('tbody')[0].addEventListener('change', function (event) {
+  for (var tr = event.target.parentNode; tr.nodeName !== 'TR'; tr = tr.parentNode);
+  tr.classList.toggle('info', event.target.checked);
+})
+</script>
