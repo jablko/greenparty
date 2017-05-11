@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<link rel=stylesheet href=http://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css>
+<style>
+.table > thead > tr:first-child > th + th {
+  border-color: transparent;
+}
+.table > thead > tr:first-child > th:first-child,
+.table > tbody > tr > th,
+.table > tfoot > tr > th {
+  border-right: 2px solid #ddd;
+}
+.table > thead > tr:first-child > th:last-child,
+.table > thead > tr:last-child > th:nth-last-child(2),
+.table > tbody > tr > td:nth-last-child(2),
+.table > tfoot > tr > td:nth-last-child(2) {
+  border-left: 2px solid #ddd;
+}
+.table > tfoot > tr > td,
+.table > tfoot > tr > th {
+  border-width: 2px;
+}
+</style>
+<div class=container>
+  <table class="table table-striped">
+    <thead>
+      <tr>
+        <th rowspan=2>
+      {% for support_level in support_levels %}
+        <th colspan=2>{{ support_level }}
+      {% endfor %}
+        <th colspan=2>Grand Total
+      <tr>
+      {% for support_level in support_levels %}
+        <th>Advanced
+        <th class=info>General
+      {% endfor %}
+        <th>Advanced
+        <th class=info>General
+    <tbody>
+    {% for grouper, list in rows|groupby('Precinct') %}
+      <tr>
+        <th scope=row>{{ grouper }}
+      {% set support_level_group = dict(list|groupby('Support')) %}
+      {% for support_level in support_levels %}
+        {% set voted_group = dict(support_level_group[support_level]|groupby('2017_gotv_voted')) %}
+        <td class=text-right>{% if voted_group.Advanced %}{{ voted_group.Advanced|length }}{% endif %}
+        <td class="info text-right">{% if voted_group.General %}{{ voted_group.General|length }}{% endif %}
+      {% endfor %}
+        {% set voted_group = dict(list|groupby('2017_gotv_voted')) %}
+        <td class=text-right>{% if voted_group.Advanced %}{{ voted_group.Advanced|length }}{% endif %}
+        <td class="info text-right">{% if voted_group.General %}{{ voted_group.General|length }}{% endif %}
+    {% endfor %}
+    <tfoot>
+      <tr>
+        <th scope=row>Grand Total
+      {% set support_level_group = dict(rows|groupby('Support')) %}
+      {% for support_level in support_levels %}
+        {% set voted_group = dict(support_level_group[support_level]|groupby('2017_gotv_voted')) %}
+        <td class=text-right>{% if voted_group.Advanced %}{{ voted_group.Advanced|length }}{% endif %}
+        <td class="info text-right">{% if voted_group.General %}{{ voted_group.General|length }}{% endif %}
+      {% endfor %}
+        {% set voted_group = dict(rows|groupby('2017_gotv_voted')) %}
+        <td class=text-right>{% if voted_group.Advanced %}{{ voted_group.Advanced|length }}{% endif %}
+        <td class="info text-right">{% if voted_group.General %}{{ voted_group.General|length }}{% endif %}
+  </table>
+</div>
